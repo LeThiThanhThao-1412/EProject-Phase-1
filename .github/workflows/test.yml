@@ -10,11 +10,6 @@ jobs:
         image: mongo:5.0
         ports:
           - 27017:27017
-        options: >-
-          --health-cmd="echo 'db.runCommand(\"ping\").ok' | mongosh localhost:27017/test --quiet"
-          --health-interval=10s
-          --health-timeout=5s
-          --health-retries=5
 
     steps:
     - name: Checkout code
@@ -29,13 +24,7 @@ jobs:
     - name: Wait for MongoDB
       run: |
         echo "Waiting for MongoDB to be ready..."
-        sleep 15
-        # Install mongosh for health check
-        curl -fsSL https://pgp.mongodb.com/server-6.0.asc | sudo gpg -o /usr/share/keyrings/mongodb-server-6.0.gpg --dearmor
-        echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-6.0.gpg ] https://repo.mongodb.org/apt/ubuntu focal/mongodb-org/6.0 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-6.0.list
-        sudo apt-get update
-        sudo apt-get install -y mongodb-mongosh
-        mongosh --eval "db.adminCommand('ping')" --quiet || echo "MongoDB starting..."
+        sleep 10
 
     - name: Create .env files for testing
       run: |
@@ -57,44 +46,21 @@ jobs:
         PORT=3001
         NODE_ENV=test
         EOF
-        
-        # Tạo .env cho order với MongoDB local
-        cat > order/.env << EOF
-        MONGODB_ORDER_URI=mongodb://localhost:27017/order_test
-        PORT=3002
-        NODE_ENV=test
-        EOF
 
-    - name: Install dependencies and test packages
+    - name: Install dependencies with dev
       run: |
-        echo "Installing dependencies..."
-        
-        # Auth service
-        cd auth
-        npm ci
-        # Install mocha globally or check if it's in devDependencies
-        npm install --save-dev mocha chai chai-http
-        cd ..
-        
-        # Product service  
-        cd product
-        npm ci
-        npm install --save-dev mocha chai chai-http
-        cd ..
-        
-        # Order service
-        cd order
-        npm ci
-        npm install --save-dev mocha chai chai-http || echo "Order service may not need tests"
-        cd ..
+        echo "Installing dependencies including devDependencies..."
+        # Sử dụng NODE_ENV=development để cài đặt cả devDependencies
+        cd auth && NODE_ENV=development npm ci
+        cd ../product && NODE_ENV=development npm ci
         
     - name: Run tests for auth service
       run: |
         echo "Running auth tests..."
         cd auth
-        # Check if mocha is available
-        npx mocha --version
-        npx mocha --timeout 20000 src/test/**/*.test.js --exit
+        # Kiểm tra xem mocha có được cài đặt không
+        ./node_modules/.bin/mocha --version || npx mocha --version
+        npm test
         
     - name: Start auth service and run product tests
       run: |
@@ -107,13 +73,13 @@ jobs:
         echo "Waiting for auth service to start..."
         sleep 25
         
-        # Check if auth service is running with retry
-        for i in {1..5}; do
+        # Check if auth service is running với retry
+        for i in {1..10}; do
           if curl -f http://localhost:3000/health || curl -f http://localhost:3000/login; then
-            echo "Auth service is ready!"
+            echo "✅ Auth service is ready!"
             break
           else
-            echo "Attempt $i: Auth service not ready, waiting..."
+            echo "⏳ Attempt $i: Auth service not ready, waiting..."
             sleep 5
           fi
         done
@@ -121,32 +87,10 @@ jobs:
         # Run product tests
         echo "Running product tests..."
         cd ../product
-        npx mocha --version
-        npx mocha --timeout 20000 src/test/**/*.test.js --exit
-
-    - name: Run order service tests (if any)
-      run: |
-        echo "Checking order service..."
-        cd order
-        # Check if test files exist
-        if [ -d "src/test" ] && [ "$(ls -A src/test/*.test.js 2>/dev/null)" ]; then
-          npx mocha --timeout 20000 src/test/**/*.test.js --exit
-        else
-          echo "No test files found in order service"
-        fi
+        npm test
 
     - name: Cleanup
       if: always()
       run: |
         echo "Cleaning up..."
-        # Stop any running Node processes
         pkill -f "node" || true
-        # Cleanup test databases
-        mongosh --eval "
-          use auth_test;
-          db.dropDatabase();
-          use product_test; 
-          db.dropDatabase();
-          use order_test;
-          db.dropDatabase();
-        " --quiet || echo "MongoDB cleanup completed"
