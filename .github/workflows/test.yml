@@ -15,16 +15,35 @@ jobs:
         node-version: '18'
         cache: 'npm'
         
+    - name: Check if secrets exist
+      run: |
+        echo "Checking secrets..."
+        echo "MONGODB_PRODUCT_URI length: ${#MONGODB_PRODUCT_URI}"
+        echo "JWT_SECRET length: ${#JWT_SECRET}"
+        echo "LOGIN_TEST_USER length: ${#LOGIN_TEST_USER}"
+        
+        if [[ -z "$MONGODB_PRODUCT_URI" ]]; then
+          echo "❌ ERROR: MONGODB_PRODUCT_URI secret is not set!"
+          echo "Please go to Repository Settings → Secrets → Actions to add it"
+          exit 1
+        fi
+
     - name: Validate MongoDB URI format
       run: |
         echo "Checking MongoDB URI format..."
         URI="${{ secrets.MONGODB_PRODUCT_URI }}"
-        if [[ $URI != mongodb://* && $URI != mongodb+srv://* ]]; then
+        echo "URI length: ${#URI}"
+        
+        if [[ -z "$URI" ]]; then
+          echo "❌ ERROR: MONGODB_PRODUCT_URI is empty!"
+          exit 1
+        elif [[ $URI != mongodb://* && $URI != mongodb+srv://* ]]; then
           echo "❌ ERROR: MongoDB URI must start with 'mongodb://' or 'mongodb+srv://'"
           echo "Current URI starts with: ${URI:0:20}"
           exit 1
         else
           echo "✅ MongoDB URI format is correct"
+          echo "URI starts with: ${URI:0:30}..."
         fi
 
     - name: Create .env files
@@ -45,12 +64,6 @@ jobs:
         AUTH_SERVICE_URL=http://localhost:3000
         PORT=3001
         EOF
-        
-        # Verify files were created
-        echo "=== Auth .env ==="
-        cat auth/.env
-        echo "=== Product .env ==="  
-        cat product/.env
 
     - name: Install dependencies
       run: |
@@ -63,11 +76,7 @@ jobs:
         
     - name: Run tests for product
       run: |
-        # Start auth service
         cd auth && npm start &
-        # Wait for auth to be ready
-        sleep 20
-        # Check if auth is running
-        curl -f http://localhost:3000/health || echo "Auth service not ready"
-        # Run product tests
+        sleep 25
+        curl -f http://localhost:3000/health || echo "Auth service health check failed"
         cd product && npm test
