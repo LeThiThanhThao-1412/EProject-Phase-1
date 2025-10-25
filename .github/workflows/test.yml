@@ -96,28 +96,67 @@ jobs:
         cd auth
         npm test
         
-    - name: Start auth service and run product tests
+    - name: Start auth service and prepare for product tests
       run: |
-        echo "Starting auth service and running product tests..."
+        echo "Starting auth service and preparing for product tests..."
         # Start auth service in background
         cd auth
         npm start &
         
-        # Wait for auth service to be ready - KIỂM TRA HEALTH ENDPOINT
+        # Wait for auth service to be ready
         echo "Waiting for auth service to start..."
-        sleep 25
+        sleep 30
         
-        # Bây giờ health endpoint đã có, kiểm tra lại
-        echo "Checking auth service health endpoint..."
-        curl -f http://localhost:3000/health || (echo "Health endpoint failed, trying alternative check..." && sleep 10)
+        # Check auth service health
+        echo "Checking auth service health..."
+        curl -f http://localhost:3000/health || echo "Health endpoint check failed"
         
-        # Chạy product tests
+        # Tạo test user và lấy token
+        echo "Creating test user and getting token..."
+        
+        # Đăng ký user test
+        curl -X POST http://localhost:3000/register \
+          -H "Content-Type: application/json" \
+          -d '{"username":"test@example.com","password":"testpassword123"}' \
+          --silent --show-error || echo "User might already exist"
+        
+        # Lấy token từ auth service
+        echo "Getting auth token..."
+        TOKEN_RESPONSE=$(curl -s -X POST http://localhost:3000/login \
+          -H "Content-Type: application/json" \
+          -d '{"username":"test@example.com","password":"testpassword123"}')
+        
+        echo "Token response: $TOKEN_RESPONSE"
+        
+        # Trích xuất token từ response
+        TOKEN=$(echo "$TOKEN_RESPONSE" | grep -o '"token":"[^"]*' | cut -d'"' -f4)
+        echo "Extracted token: $TOKEN"
+        
+        # Tạo file tạm chứa token để product test sử dụng
+        echo "$TOKEN" > /tmp/auth_token.txt
+        echo "Token saved to /tmp/auth_token.txt"
+        
+    - name: Run product tests with fixed token
+      run: |
         echo "Running product tests..."
-        cd ../product
-        npm test
+        cd product
+        
+        # Đọc token từ file
+        AUTH_TOKEN=$(cat /tmp/auth_token.txt)
+        echo "Using auth token: $AUTH_TOKEN"
+        
+        # Kiểm tra token có tồn tại không
+        if [ -z "$AUTH_TOKEN" ]; then
+          echo "ERROR: Auth token is empty!"
+          exit 1
+        fi
+        
+        # Chạy test với token đã fix
+        AUTH_TOKEN="$AUTH_TOKEN" npm test
 
     - name: Cleanup
       if: always()
       run: |
         echo "Cleaning up..."
         pkill -f "node" || true
+        rm -f /tmp/auth_token.txt
