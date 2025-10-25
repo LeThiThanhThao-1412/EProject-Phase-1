@@ -4,34 +4,70 @@ on: [push, pull_request]
 jobs:
   test:
     runs-on: ubuntu-latest
+    
     steps:
     - name: Checkout code
       uses: actions/checkout@v3.2.0
-    - name: Create .env file
+      
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '18'
+        cache: 'npm'
+        
+    - name: Validate MongoDB URI format
       run: |
-        echo "MONGODB_AUTH_URI=${{ secrets.MONGODB_PRODUCT_URI }}" >> auth/.env
-        echo "JWT_SECRET=${{ secrets.JWT_SECRET }}" >> auth/.env
-        echo "JWT_SECRET=${{ secrets.JWT_SECRET }}" >> product/.env
-        echo "MONGODB_PRODUCT_URI=${{ secrets.MONGODB_PRODUCT_URI }}" >> product/.env
-        echo "LOGIN_TEST_USER=${{ secrets.LOGIN_TEST_USER }}" >> product/.env
-        echo "LOGIN_TEST_PASSWORD=${{ secrets.LOGIN_TEST_PASSWORD }}" >> product/.env
+        echo "Checking MongoDB URI format..."
+        URI="${{ secrets.MONGODB_PRODUCT_URI }}"
+        if [[ $URI != mongodb://* && $URI != mongodb+srv://* ]]; then
+          echo "❌ ERROR: MongoDB URI must start with 'mongodb://' or 'mongodb+srv://'"
+          echo "Current URI starts with: ${URI:0:20}"
+          exit 1
+        else
+          echo "✅ MongoDB URI format is correct"
+        fi
+
+    - name: Create .env files
+      run: |
+        # Tạo .env cho auth
+        cat > auth/.env << EOF
+        MONGODB_AUTH_URI=${{ secrets.MONGODB_PRODUCT_URI }}
+        JWT_SECRET=${{ secrets.JWT_SECRET }}
+        PORT=3000
+        EOF
+        
+        # Tạo .env cho product  
+        cat > product/.env << EOF
+        JWT_SECRET=${{ secrets.JWT_SECRET }}
+        MONGODB_PRODUCT_URI=${{ secrets.MONGODB_PRODUCT_URI }}
+        LOGIN_TEST_USER=${{ secrets.LOGIN_TEST_USER }}
+        LOGIN_TEST_PASSWORD=${{ secrets.LOGIN_TEST_PASSWORD }}
+        AUTH_SERVICE_URL=http://localhost:3000
+        PORT=3001
+        EOF
+        
+        # Verify files were created
+        echo "=== Auth .env ==="
+        cat auth/.env
+        echo "=== Product .env ==="  
+        cat product/.env
 
     - name: Install dependencies
       run: |
-        cd auth
-        npm ci
-        cd ..
-        cd product
-        npm ci
-        cd ..
-        npm ci
+        cd auth && npm ci
+        cd ../product && npm ci
+        
     - name: Run tests for auth
-      run : |
-        cd auth
-        npm test
+      run: |
+        cd auth && npm test
+        
     - name: Run tests for product
       run: |
-        cd auth &&
-        npm start &
-        cd product
-        npm test
+        # Start auth service
+        cd auth && npm start &
+        # Wait for auth to be ready
+        sleep 20
+        # Check if auth is running
+        curl -f http://localhost:3000/health || echo "Auth service not ready"
+        # Run product tests
+        cd product && npm test
