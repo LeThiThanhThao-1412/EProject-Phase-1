@@ -29,8 +29,13 @@ jobs:
     - name: Wait for MongoDB
       run: |
         echo "Waiting for MongoDB to be ready..."
-        sleep 10
-        curl -f http://localhost:27017/ || echo "MongoDB starting..."
+        sleep 15
+        # Install mongosh for health check
+        curl -fsSL https://pgp.mongodb.com/server-6.0.asc | sudo gpg -o /usr/share/keyrings/mongodb-server-6.0.gpg --dearmor
+        echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-6.0.gpg ] https://repo.mongodb.org/apt/ubuntu focal/mongodb-org/6.0 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-6.0.list
+        sudo apt-get update
+        sudo apt-get install -y mongodb-mongosh
+        mongosh --eval "db.adminCommand('ping')" --quiet || echo "MongoDB starting..."
 
     - name: Create .env files for testing
       run: |
@@ -60,53 +65,83 @@ jobs:
         NODE_ENV=test
         EOF
 
-        # Verify files
-        echo "=== Auth .env ==="
-        cat auth/.env
-        echo "=== Product .env ==="
-        cat product/.env
-
-    - name: Install dependencies
+    - name: Install dependencies and test packages
       run: |
         echo "Installing dependencies..."
-        cd auth && npm ci
-        cd ../product && npm ci
-        cd ../order && npm ci
+        
+        # Auth service
+        cd auth
+        npm ci
+        # Install mocha globally or check if it's in devDependencies
+        npm install --save-dev mocha chai chai-http
+        cd ..
+        
+        # Product service  
+        cd product
+        npm ci
+        npm install --save-dev mocha chai chai-http
+        cd ..
+        
+        # Order service
+        cd order
+        npm ci
+        npm install --save-dev mocha chai chai-http || echo "Order service may not need tests"
+        cd ..
         
     - name: Run tests for auth service
       run: |
         echo "Running auth tests..."
-        cd auth && npm test
+        cd auth
+        # Check if mocha is available
+        npx mocha --version
+        npx mocha --timeout 20000 src/test/**/*.test.js --exit
         
     - name: Start auth service and run product tests
       run: |
         echo "Starting auth service and running product tests..."
         # Start auth service in background
-        cd auth && npm start &
+        cd auth
+        npm start &
         
         # Wait for auth service to be ready
         echo "Waiting for auth service to start..."
-        sleep 20
+        sleep 25
         
-        # Check if auth service is running
-        echo "Checking auth service health..."
-        curl -f http://localhost:3000/health || \
-        curl -f http://localhost:3000/login || \
-        echo "Auth service might be starting..."
+        # Check if auth service is running with retry
+        for i in {1..5}; do
+          if curl -f http://localhost:3000/health || curl -f http://localhost:3000/login; then
+            echo "Auth service is ready!"
+            break
+          else
+            echo "Attempt $i: Auth service not ready, waiting..."
+            sleep 5
+          fi
+        done
         
         # Run product tests
         echo "Running product tests..."
-        cd product && npm test
+        cd ../product
+        npx mocha --version
+        npx mocha --timeout 20000 src/test/**/*.test.js --exit
 
     - name: Run order service tests (if any)
       run: |
         echo "Checking order service..."
-        cd order && npm test || echo "No tests in order service or tests failed"
+        cd order
+        # Check if test files exist
+        if [ -d "src/test" ] && [ "$(ls -A src/test/*.test.js 2>/dev/null)" ]; then
+          npx mocha --timeout 20000 src/test/**/*.test.js --exit
+        else
+          echo "No test files found in order service"
+        fi
 
-    - name: Cleanup test databases
+    - name: Cleanup
       if: always()
       run: |
-        echo "Cleaning up test databases..."
+        echo "Cleaning up..."
+        # Stop any running Node processes
+        pkill -f "node" || true
+        # Cleanup test databases
         mongosh --eval "
           use auth_test;
           db.dropDatabase();
@@ -114,4 +149,4 @@ jobs:
           db.dropDatabase();
           use order_test;
           db.dropDatabase();
-        " || echo "MongoDB cleanup completed"
+        " --quiet || echo "MongoDB cleanup completed"
